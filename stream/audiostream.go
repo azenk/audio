@@ -1,4 +1,4 @@
-package audiostream
+package stream
 
 import (
 	"bytes"
