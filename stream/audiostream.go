@@ -96,7 +96,7 @@ func OpenDefaultDevice(ctx context.Context, requestedConfig *Configuration) (*St
 	d := &StreamDevice{
 		doneCh:  make(chan error),
 		config:  &Configuration{},
-		readyCh: make(chan struct{}),
+		readyCh: make(chan struct{}, 1),
 	}
 
 	cards, err := alsa.OpenCards()
