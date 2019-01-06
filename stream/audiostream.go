@@ -76,11 +76,11 @@ func (c Configuration) OutputDelay() time.Duration {
 }
 
 type StreamDevice struct {
-	cards       []*alsa.Card
-	device      *alsa.Device
-	doneCh      chan error
-	config      *Configuration
-	frameSentCh chan struct{}
+	cards   []*alsa.Card
+	device  *alsa.Device
+	doneCh  chan error
+	config  *Configuration
+	readyCh chan struct{}
 }
 
 func NewStreamDevice(device *alsa.Device) *StreamDevice {
@@ -94,9 +94,9 @@ func NewStreamDevice(device *alsa.Device) *StreamDevice {
 
 func OpenDefaultDevice(ctx context.Context, requestedConfig *Configuration) (*StreamDevice, error) {
 	d := &StreamDevice{
-		doneCh:      make(chan error),
-		config:      &Configuration{},
-		frameSentCh: make(chan struct{}),
+		doneCh:  make(chan error),
+		config:  &Configuration{},
+		readyCh: make(chan struct{}),
 	}
 
 	cards, err := alsa.OpenCards()
@@ -189,7 +189,7 @@ func (d *StreamDevice) Open(requestedConfig *Configuration) (*Configuration, err
 		Channels:   channels,
 	}
 	d.config = c
-
+	d.readyCh <- struct{}{}
 	return c, nil
 }
 
@@ -240,9 +240,9 @@ func (d *StreamDevice) encodeSamples(inputCh chan []Sample) {
 	}()
 }
 
-// FrameSent returns a channel that will be signaled whenever a frame has been sent
-func (d *StreamDevice) FrameSent() chan struct{} {
-	return d.frameSentCh
+// Ready returns a channel that will be signaled whenever the stream is ready for more data
+func (d *StreamDevice) Ready() chan struct{} {
+	return d.readyCh
 }
 
 func (d *StreamDevice) writeFrame(frameCh chan []byte) {
@@ -253,7 +253,7 @@ func (d *StreamDevice) writeFrame(frameCh chan []byte) {
 			d.doneCh <- err
 		}
 		select {
-		case d.frameSentCh <- struct{}{}:
+		case d.readyCh <- struct{}{}:
 		default:
 		}
 	}
