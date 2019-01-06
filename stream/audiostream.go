@@ -2,60 +2,139 @@ package stream
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/golang/glog"
 	"github.com/yobert/alsa"
 )
 
-type StreamConfiguration struct {
+type Sample int32
+
+func (s Sample) Encode(buf io.Writer, format alsa.FormatType) {
+	switch format {
+	case alsa.S16_LE:
+		binary.Write(buf, binary.LittleEndian, int16(s>>16))
+	case alsa.S32_LE:
+		binary.Write(buf, binary.LittleEndian, s)
+	case alsa.S16_BE:
+		binary.Write(buf, binary.BigEndian, int16(s>>16))
+	case alsa.S32_BE:
+		binary.Write(buf, binary.BigEndian, s)
+	}
+}
+
+type Configuration struct {
 	PeriodSize int
 	BufferSize int
-	Format     alsa.FormatType
+	format     alsa.FormatType
 	Rate       int
 	Channels   int
 }
 
-func (c StreamConfiguration) SampleSizeBytes() int {
-	switch c.Format {
+func (c Configuration) SampleSizeBytes() int {
+	switch c.format {
 	case alsa.S16_LE:
 		return 2
 	case alsa.S32_LE:
+		return 4
+	case alsa.S16_BE:
+		return 2
+	case alsa.S32_BE:
 		return 4
 	}
 	return 0
 }
 
-func (c StreamConfiguration) String() string {
+func (c Configuration) ChannelCount() int {
+	if c.Channels == 0 {
+		return 1
+	}
+	return c.Channels
+}
+
+func (c Configuration) SampleRate() int {
+	if c.Rate == 0 {
+		return 44100
+	}
+	return c.Rate
+}
+
+func (c Configuration) sampleFormat() alsa.FormatType {
+	return c.format
+}
+
+func (c Configuration) String() string {
 	return fmt.Sprintf("Period: %d, SampleSize: %d bits, Rate: %d HZ, Channels: %d", c.PeriodSize, c.SampleSizeBytes()*8, c.Rate, c.Channels)
 }
 
-func (c StreamConfiguration) OutputDelay() time.Duration {
+func (c Configuration) OutputDelay() time.Duration {
 	return time.Duration(c.PeriodSize) * time.Second / time.Duration(c.Rate)
 }
 
 type StreamDevice struct {
+	cards  []*alsa.Card
 	device *alsa.Device
 	doneCh chan error
-	config *StreamConfiguration
+	config *Configuration
 }
 
 func NewStreamDevice(device *alsa.Device) *StreamDevice {
 	d := &StreamDevice{
 		device: device,
 		doneCh: make(chan error),
-		config: &StreamConfiguration{},
+		config: &Configuration{},
 	}
 	return d
 }
 
-func (d *StreamDevice) Config() *StreamConfiguration {
+func OpenDefaultDevice(ctx context.Context, requestedConfig *Configuration) (*StreamDevice, error) {
+	d := &StreamDevice{
+		doneCh: make(chan error),
+		config: &Configuration{},
+	}
+
+	cards, err := alsa.OpenCards()
+	if err != nil {
+		return nil, fmt.Errorf("Unable to open cards: %v", err)
+	}
+
+	if len(cards) == 0 {
+		return nil, fmt.Errorf("Unable to get alsa device")
+	}
+
+	d.cards = cards
+	card := cards[0]
+
+	devices, err := card.Devices()
+	if err != nil {
+		return nil, fmt.Errorf("Unable to list devices: %v", err)
+	}
+
+	for _, dev := range devices {
+		if dev.Type == alsa.PCM && dev.Play {
+			d.device = dev
+			break
+		}
+	}
+
+	config, err := d.Open(requestedConfig)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to open device for streaming: %v", err)
+	}
+	d.config = config
+	go d.closeWithContext(ctx)
+	return d, nil
+}
+
+func (d *StreamDevice) Config() *Configuration {
 	return d.config
 }
 
-func (d *StreamDevice) Open() (*StreamConfiguration, error) {
+func (d *StreamDevice) Open(requestedConfig *Configuration) (*Configuration, error) {
 	var err error
 
 	if err = d.device.Open(); err != nil {
@@ -64,12 +143,12 @@ func (d *StreamDevice) Open() (*StreamConfiguration, error) {
 
 	// Cleanup device when done or force cleanup after 3 seconds.
 
-	channels, err := d.device.NegotiateChannels(1, 2)
+	channels, err := d.device.NegotiateChannels(requestedConfig.ChannelCount())
 	if err != nil {
 		return nil, err
 	}
 
-	rate, err := d.device.NegotiateRate(44100)
+	rate, err := d.device.NegotiateRate(requestedConfig.SampleRate())
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +163,7 @@ func (d *StreamDevice) Open() (*StreamConfiguration, error) {
 	// start playback until the buffer has been filled to a certain degree and the automatic
 	// buffer size can be quite large.
 	// Some devices only accept even periods while others want powers of 2.
-	wantPeriodSize := 2048 // ~3ms @ 44100Hz
+	wantPeriodSize := 1024 // ~3ms @ 44100Hz
 
 	periodSize, err := d.device.NegotiatePeriodSize(wantPeriodSize)
 	if err != nil {
@@ -100,10 +179,10 @@ func (d *StreamDevice) Open() (*StreamConfiguration, error) {
 		return nil, err
 	}
 
-	c := &StreamConfiguration{
+	c := &Configuration{
 		BufferSize: bufferSize,
 		PeriodSize: periodSize,
-		Format:     format,
+		format:     format,
 		Rate:       rate,
 		Channels:   channels,
 	}
@@ -112,7 +191,13 @@ func (d *StreamDevice) Open() (*StreamConfiguration, error) {
 	return c, nil
 }
 
+func (d *StreamDevice) closeWithContext(ctx context.Context) {
+	<-ctx.Done()
+	d.Close()
+}
+
 func (d *StreamDevice) Close() {
+	alsa.CloseCards(d.cards)
 	glog.Info("Closing device")
 	d.device.Close()
 	glog.Info("Device Closed")
@@ -122,99 +207,52 @@ func (d *StreamDevice) Done() chan error {
 	return d.doneCh
 }
 
-func (d *StreamDevice) encodeSamples(inputCh chan int32, outputCh chan byte) {
-	var buf bytes.Buffer
-	for sample := range inputCh {
-		// glog.Infof("Got sample: %d", sample)
-		for c := 0; c < d.config.Channels; c++ {
-			switch d.config.Format {
-			case alsa.S16_LE:
-				for c := 0; c < d.config.Channels; c++ {
-					binary.Write(&buf, binary.LittleEndian, int16(sample>>16))
-				}
-
-			case alsa.S32_LE:
-				for c := 0; c < d.config.Channels; c++ {
-					binary.Write(&buf, binary.LittleEndian, sample)
-				}
-			}
-		}
-
-		for _, b := range buf.Bytes() {
-			outputCh <- b
-		}
-		buf.Reset()
-	}
-	glog.Infof("Done recieving samples, closing output channel")
-	close(outputCh)
-}
-
-func (d *StreamDevice) writeByteCh(outputCh chan byte) {
+func (d *StreamDevice) encodeSamples(inputCh chan []Sample) {
 	var buf bytes.Buffer
 	var frameBytes int = d.config.PeriodSize * d.config.Channels * d.config.SampleSizeBytes()
 	glog.Infof("Output frame size: %d bytes", frameBytes)
 
-	frameCh := make(chan []byte, 1)
+	frameCh := make(chan []byte, 2)
 	go d.writeFrame(frameCh)
 
-	// fillStart := time.Now()
-	var more = true
-	for more {
-		b, more := <-outputCh
-		// read enough bytes to fill buffer
-		err := buf.WriteByte(b)
-		if err != nil {
-			d.doneCh <- err
-		}
-
-		// glog.Infof("Current output buffer size: %d", buf.Len())
-		// flush buffer to device
-		if buf.Len() >= frameBytes || !more {
-			// outputFill := time.Since(fillStart)
-			// glog.Infof("outputBufferFill Time %s", outputFill)
-			// glog.Infof("Flushing output buffer")
-			writeBuf := make([]byte, frameBytes)
-			n, err := buf.Read(writeBuf)
-			if err != nil {
-				d.doneCh <- err
+	go func() {
+		for samples := range inputCh {
+			for _, s := range samples {
+				s.Encode(&buf, d.config.format)
 			}
-			if n != frameBytes {
-				glog.Infof("Writing non-standard frame: %d bytes", n)
+			if buf.Len() >= frameBytes {
+				writeBuf := make([]byte, frameBytes)
+				n, err := buf.Read(writeBuf)
+				if err != nil {
+					d.doneCh <- err
+				}
+				if n != frameBytes {
+					glog.Infof("Writing non-standard frame: %d bytes", n)
+				}
+				frameCh <- writeBuf
 			}
 
-			// glog.Info("Flushing full frame")
-			frameCh <- writeBuf
-
-			// fillStart = time.Now()
-			// glog.Infof("Buffer Length: %d", buf.Len())
 		}
-	}
-	close(frameCh)
+		glog.Infof("Done recieving samples, closing frame channel")
+		close(frameCh)
+	}()
 }
 
 func (d *StreamDevice) writeFrame(frameCh chan []byte) {
-	// expectedFrameFlushDuration := time.Second * time.Duration(d.config.PeriodSize) / time.Duration(d.config.Rate)
 	frameUnitSize := d.config.SampleSizeBytes() * d.config.Channels
 	for frame := range frameCh {
-
 		err := d.device.Write(frame, len(frame)/frameUnitSize)
 		if err != nil {
 			d.doneCh <- err
 		}
-
-		// if elapsed > expectedFrameFlushDuration {
-		// 	glog.Infof("Frame took too long to flush: %s, expected %s, size: %d", elapsed, expectedFrameFlushDuration, len(frame))
-		// }
 	}
 	close(d.doneCh)
 }
 
-func (d *StreamDevice) Stream() chan int32 {
-	sampleCh := make(chan int32, 5)
-	outputCh := make(chan byte, 5*d.config.SampleSizeBytes()*d.config.Channels)
+func (d *StreamDevice) Stream() chan []Sample {
+	sampleCh := make(chan []Sample, 100)
 
-	go d.encodeSamples(sampleCh, outputCh)
-	go d.writeByteCh(outputCh)
+	d.encodeSamples(sampleCh)
 
 	return sampleCh
 }
