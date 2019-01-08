@@ -15,41 +15,60 @@ func TestSampleClock(t *testing.T) {
 		Name       string
 		Frequency  float64
 		SampleRate int
+		CycleCount int
 	}{
 		{
 			Name:       "4Hz",
 			Frequency:  4,
 			SampleRate: 44100,
+			CycleCount: 10,
 		},
 		{
 			Name:       "100Hz",
 			Frequency:  100,
 			SampleRate: 44100,
+			CycleCount: 10,
 		},
 		{
 			Name:       "2400Hz",
 			Frequency:  2400,
 			SampleRate: 44100,
+			CycleCount: 36000,
 		},
 		{
 			Name:       "4413Hz",
 			Frequency:  4413,
 			SampleRate: 44100,
+			CycleCount: 36000,
+		},
+		{
+			Name:       "2397.6Hz-44.1khz",
+			Frequency:  2397.6023976,
+			SampleRate: 44100,
+			CycleCount: 3e6,
+		},
+		{
+			Name:       "2397.6Hz-48khz",
+			Frequency:  2397.6023976,
+			SampleRate: 48000,
+			CycleCount: 3e6,
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.Name, func(st *testing.T) {
 			clock := newSampleClock(c.Frequency, c.SampleRate)
 
-			testInterval := 10
 			var count int
-			for i := 0; i < int(c.Frequency)*testInterval; i++ {
+			samplesPerCycleFloat := float64(c.SampleRate) / c.Frequency
+			for i := 0; i < c.CycleCount; i++ {
 				c1, c2 := clock.samples()
 				count += c1 + c2
 			}
 
-			if count != c.SampleRate*testInterval && count != c.SampleRate*testInterval-1 {
-				st.Errorf("Got fewer samples than expected %d, expected either %d or %d", count, c.SampleRate*testInterval-1, c.SampleRate*testInterval)
+			expectedSampleCount := int(math.Round(samplesPerCycleFloat * float64(c.CycleCount)))
+			if count != expectedSampleCount && count != expectedSampleCount-1 {
+				st.Logf("Sampleclock: %s", clock)
+				st.Errorf("Got %d samples, expected %d", count, expectedSampleCount)
 			}
 
 		})

@@ -2,6 +2,7 @@ package encoding
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/azenk/audio/stream"
@@ -9,17 +10,17 @@ import (
 
 type sampleClock struct {
 	baseSamplePeriod int
-	remainder        int
-	frequencyFp      int
-	errPerCycle      int
+	remainder        int64
+	errMax           int64
+	errPerCycle      int64
 }
 
 func newSampleClock(frequency float64, sampleRate int) *sampleClock {
 	c := &sampleClock{}
 	samplesPerCycle := float64(sampleRate) / frequency
 	c.baseSamplePeriod = int(samplesPerCycle)
-	c.errPerCycle = int(math.Round((samplesPerCycle - math.Floor(samplesPerCycle)) * frequency * 100))
-	c.frequencyFp = int(math.Round(frequency * 100))
+	c.errMax = 1e7
+	c.errPerCycle = int64(math.Round((samplesPerCycle - math.Floor(samplesPerCycle)) * float64(c.errMax)))
 	return c
 }
 
@@ -28,13 +29,17 @@ func (c *sampleClock) samples() (int, int) {
 	c1 := c.baseSamplePeriod>>1 + c.baseSamplePeriod%2
 	c2 := c.baseSamplePeriod >> 1
 
-	if c.remainder >= c.frequencyFp {
-		c2 = c2 + 1
-		c.remainder = c.remainder - c.frequencyFp
-	}
 	c.remainder += c.errPerCycle
+	if c.remainder >= c.errMax {
+		c2 = c2 + 1
+		c.remainder = c.remainder - c.errMax
+	}
 
 	return c1, c2
+}
+
+func (c sampleClock) String() string {
+	return fmt.Sprintf("Base Period: %d, Remainder: %d, ErrMax: %d, ErrPerCycle: %d", c.baseSamplePeriod, c.remainder, c.errMax, c.errPerCycle)
 }
 
 func DifferentialManchester(ctx context.Context, bufLen int, bitsPerSecond, amplitude float64, sampleRate int, inCh chan byte) chan stream.Sample {
