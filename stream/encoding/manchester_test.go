@@ -14,7 +14,7 @@ func TestSampleClock(t *testing.T) {
 	cases := []struct {
 		Name       string
 		Frequency  float64
-		SampleRate int
+		SampleRate float64
 		CycleCount int
 	}{
 		{
@@ -81,7 +81,7 @@ func TestDifferentialManchester(t *testing.T) {
 		InputBytes      []byte
 		BitsPerSecond   float64
 		Amplitude       float64
-		SampleRate      int
+		SampleRate      float64
 		ExpectedSamples []stream.Sample
 	}{
 		{

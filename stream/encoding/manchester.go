@@ -15,9 +15,9 @@ type sampleClock struct {
 	errPerCycle      int64
 }
 
-func newSampleClock(frequency float64, sampleRate int) *sampleClock {
+func newSampleClock(frequency float64, sampleRate float64) *sampleClock {
 	c := &sampleClock{}
-	samplesPerCycle := float64(sampleRate) / frequency
+	samplesPerCycle := sampleRate / frequency
 	c.baseSamplePeriod = int(samplesPerCycle)
 	c.errMax = 1e7
 	c.errPerCycle = int64(math.Round((samplesPerCycle - math.Floor(samplesPerCycle)) * float64(c.errMax)))
@@ -42,7 +42,7 @@ func (c sampleClock) String() string {
 	return fmt.Sprintf("Base Period: %d, Remainder: %d, ErrMax: %d, ErrPerCycle: %d", c.baseSamplePeriod, c.remainder, c.errMax, c.errPerCycle)
 }
 
-func DifferentialManchester(ctx context.Context, bufLen int, bitsPerSecond, amplitude float64, sampleRate int, inCh chan byte) chan stream.Sample {
+func DifferentialManchester(ctx context.Context, bufLen int, bitsPerSecond, amplitude float64, sampleRate float64, inCh chan byte) chan stream.Sample {
 	outCh := make(chan stream.Sample, bufLen)
 	clock := newSampleClock(bitsPerSecond, sampleRate)
 	go func() {
