@@ -214,7 +214,7 @@ func (d *StreamDevice) encodeSamples(inputCh chan []Sample) {
 	var frameBytes int = d.config.PeriodSize * d.config.Channels * d.config.SampleSizeBytes()
 	glog.Infof("Output frame size: %d bytes", frameBytes)
 
-	frameCh := make(chan []byte, 2)
+	frameCh := make(chan []byte, 10)
 	go d.writeFrame(frameCh)
 
 	go func() {
