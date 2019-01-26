@@ -72,7 +72,7 @@ func (c Configuration) String() string {
 }
 
 func (c Configuration) OutputDelay() time.Duration {
-	return time.Duration(c.PeriodSize) * time.Second / time.Duration(c.Rate)
+	return time.Duration(c.BufferSize) * time.Second / time.Duration(c.Rate)
 }
 
 type StreamDevice struct {
